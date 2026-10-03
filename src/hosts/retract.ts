@@ -136,9 +136,26 @@ function stripSection(path: string, apply: boolean, markers: Markers[] = ALL_MAR
   // Every region graft may own, not just the instruction block. A file can hold
   // both the instructions and a brain's rules, and leaving one behind would
   // strand rules in a repo the user has uninstalled graft from.
-  if (!markers.some((m) => text.includes(m.start))) return 'absent';
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
   const lines = text.split(/\r\n|\n/);
+  // Validate every known marker span before removing any text or writing.
+  // Ambiguous ownership leaves the whole file intact, including foreign prose.
+  let active: Markers | null = null;
+  const seen = new Set<string>();
+  for (const line of lines) {
+    const token = line.trim();
+    const open = markers.find((m) => m.start === token);
+    const close = markers.find((m) => m.end === token);
+    if (open) {
+      if (active !== null || seen.has(open.start)) return 'skipped-unparseable';
+      seen.add(open.start);
+      active = open;
+    } else if (close) {
+      if (active === null || active.end !== token) return 'skipped-unparseable';
+      active = null;
+    }
+  }
+  if (active !== null) return 'skipped-unparseable';
   const out: string[] = [];
   let closing: string | null = null;
   let found = false;
