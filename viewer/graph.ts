@@ -94,7 +94,30 @@ export class GraphView {
   private edgeEls: { path: SVGPathElement; label: SVGTextElement; edge: SimEdge }[] = [];
   private nodeEls: { group: SVGGElement; circle: SVGCircleElement; ring: SVGCircleElement; label: SVGTextElement; badges: SVGGElement | null; node: SimNode }[] = [];
   private view = { x: 0, y: 0, k: 1 };
+  private panStart: { x: number; y: number } | null = null;
+  private panPointerId: number | null = null;
+  private activeDrag: {
+    node: SimNode; pointerId: number; clientX: number; clientY: number;
+    offsetX: number; offsetY: number; finish: () => void;
+  } | null = null;
   private tab: "context" | "code" = "context";
+  private size = { width: 0, height: 0 };
+  private resizeObserver: ResizeObserver;
+  private resizeFrame: number | null = null;
+  private fitAfterResize = false;
+  private autoResizeView = true;
+  private readonly onPageHide = (event: PageTransitionEvent): void => {
+    // A bfcache page keeps this same view and observer when restored.
+    if (!event.persisted) {
+      this.activeDrag?.finish();
+      this.panStart = null;
+      this.panPointerId = null;
+      this.resizeObserver.disconnect();
+      if (this.resizeFrame !== null) cancelAnimationFrame(this.resizeFrame);
+      this.resizeFrame = null;
+      window.removeEventListener("pagehide", this.onPageHide);
+    }
+  };
   selected: string | null = null;
   query = "";
   hiddenRels: Record<string, boolean> = {};
@@ -108,6 +131,80 @@ export class GraphView {
     this.svg = svg;
     this.buildChrome();
     this.bindPanZoom();
+    this.resizeObserver = new ResizeObserver(() => this.scheduleResize());
+    this.resizeObserver.observe(this.svg);
+    window.addEventListener("pagehide", this.onPageHide);
+  }
+
+  private scheduleResize(): void {
+    if (this.resizeFrame !== null) return;
+    this.resizeFrame = requestAnimationFrame(() => {
+      this.resizeFrame = null;
+      const width = this.svg.clientWidth, height = this.svg.clientHeight;
+      // Outline hides the canvas; never recenter on a zero-sized panel.
+      if (!this.svg.isConnected || width <= 0 || height <= 0 || !this.sim) return;
+      const sizeChanged = width !== this.size.width || height !== this.size.height;
+      if (sizeChanged) {
+        const dx = (width - this.size.width) / 2;
+        const dy = (height - this.size.height) / 2;
+        // Shift the existing layout uniformly, retaining node/edge identity,
+        // velocities and any temporarily pinned drag node.
+        for (const node of this.nodes) {
+          node.x = (node.x ?? 0) + dx;
+          node.y = (node.y ?? 0) + dy;
+          if (node.fx != null) node.fx += dx;
+          if (node.fy != null) node.fy += dy;
+        }
+        this.size = { width, height };
+        this.sim.force("center", forceCenter<SimNode>(width / 2, height / 2));
+        if (!this.autoResizeView) {
+          // Keep the same content at the viewport center, at the user's scale.
+          const shiftX = dx * (1 - this.view.k);
+          const shiftY = dy * (1 - this.view.k);
+          this.view.x += shiftX;
+          this.view.y += shiftY;
+          // The next pointermove derives view from this captured origin.
+          if (this.panStart) {
+            this.panStart.x -= shiftX;
+            this.panStart.y -= shiftY;
+          }
+          this.applyView();
+        }
+        this.fitAfterResize = this.autoResizeView;
+        // A dragged node follows its last client pointer, not the translated
+        // layout. Reproject after both the uniform shift and view compensation.
+        this.positionActiveDrag();
+        this.tick();
+        this.sim.alpha(Math.max(this.sim.alpha(), 0.3)).restart();
+      }
+      // Header layout can move the SVG origin without changing its dimensions.
+      // A queued observation still reprojects against the current client rect.
+      if (this.activeDrag && !sizeChanged) {
+        this.positionActiveDrag();
+        this.tick();
+      }
+      if (this.fitAfterResize) this.fitVisibleBounds();
+    });
+  }
+
+  private fitVisibleBounds(): void {
+    if (!this.autoResizeView || !this.nodes.length || this.svg.clientWidth <= 0 || this.svg.clientHeight <= 0) return;
+    // SVG bounds include circles, labels and edges in graph coordinates;
+    // measuring at resize/settle avoids a DOM layout read on every force tick.
+    const bounds = this.viewport.getBBox();
+    const width = this.svg.clientWidth, height = this.svg.clientHeight;
+    const availableWidth = width - 48, availableHeight = height - 48;
+    if (availableWidth <= 0 || availableHeight <= 0 || bounds.width <= 0 || bounds.height <= 0 ||
+        ![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite)) return;
+    // Match the existing manual zoom range: a subsequent Zoom Out or positive
+    // wheel delta must never increase scale. Very large graphs can still clip.
+    const k = Math.max(0.35, Math.min(1, availableWidth / bounds.width, availableHeight / bounds.height));
+    this.view = {
+      x: width / 2 - (bounds.x + bounds.width / 2) * k,
+      y: height / 2 - (bounds.y + bounds.height / 2) * k,
+      k,
+    };
+    this.applyView();
   }
 
   private buildChrome(): void {
@@ -134,6 +231,7 @@ export class GraphView {
 
   /** Load (or morph into) a new dataset. Nodes keep their positions by id. */
   setData(graph: VizGraph, tab: "context" | "code"): void {
+    this.activeDrag?.finish();
     this.tab = tab;
     const prev = new Map(this.nodes.map((n) => [n.id, n]));
     const deg: Record<string, number> = {};
@@ -143,6 +241,7 @@ export class GraphView {
     }
     const W = this.svg.clientWidth || 800;
     const H = this.svg.clientHeight || 600;
+    this.size = { width: W, height: H };
     this.nodes = graph.nodes.map((n, i) => {
       const p = prev.get(n.id);
       const angle = (i / Math.max(1, graph.nodes.length)) * Math.PI * 2;
@@ -171,7 +270,11 @@ export class GraphView {
         .strength(0.5))
       .force("center", forceCenter(W / 2, H / 2))
       .force("collide", forceCollide<SimNode>().radius((n) => n.r + 6))
-      .on("tick", () => this.tick());
+      .on("tick", () => this.tick())
+      .on("end", () => {
+        if (this.fitAfterResize) this.fitVisibleBounds();
+        this.fitAfterResize = false;
+      });
 
     this.buildElements();
     this.restyle();
@@ -297,6 +400,8 @@ export class GraphView {
   focus(id: string): void {
     const node = this.nodes.find((n) => n.id === id);
     if (!node) return;
+    this.autoResizeView = false;
+    this.fitAfterResize = false;
     const W = this.svg.clientWidth, H = this.svg.clientHeight;
     this.view.k = Math.max(this.view.k, 1.4);
     this.view.x = W / 2 - (node.x ?? 0) * this.view.k;
@@ -315,6 +420,8 @@ export class GraphView {
   }
 
   zoomBy(factor: number): void {
+    this.autoResizeView = false;
+    this.fitAfterResize = false;
     const W = this.svg.clientWidth / 2, H = this.svg.clientHeight / 2;
     const k = Math.max(0.35, Math.min(3, this.view.k * factor));
     this.view.x = W - (W - this.view.x) * (k / this.view.k);
@@ -324,49 +431,111 @@ export class GraphView {
   }
 
   resetView(): void {
+    // Reset may be activated from the keyboard while a pointer is held.
+    // End that gesture before replacing its view or permitting automatic fit.
+    this.activeDrag?.finish();
+    this.panStart = null;
+    this.panPointerId = null;
+    this.autoResizeView = true;
+    this.fitAfterResize = true;
     this.view = { x: 0, y: 0, k: 1 };
     this.applyView();
+    this.scheduleResize();
   }
 
   reheat(): void {
     this.sim?.alpha(0.6).restart();
   }
 
+  private positionActiveDrag(): void {
+    const drag = this.activeDrag;
+    if (!drag) return;
+    const rect = this.svg.getBoundingClientRect();
+    // Offset is in client pixels: preserve the initially grabbed point on the
+    // bubble, including a resize before the first pointermove.
+    const x = (drag.clientX + drag.offsetX - rect.left - this.view.x) / this.view.k;
+    const y = (drag.clientY + drag.offsetY - rect.top - this.view.y) / this.view.k;
+    drag.node.x = drag.node.fx = x;
+    drag.node.y = drag.node.fy = y;
+  }
+
   private bindDrag(group: SVGGElement, node: SimNode): void {
     group.addEventListener("pointerdown", (ev) => {
       ev.stopPropagation();
-      group.setPointerCapture(ev.pointerId);
+      if (this.activeDrag) return;
+      // Dragging a node is explicit manual intent, including after release.
+      this.autoResizeView = false;
+      this.fitAfterResize = false;
+      const rect = this.svg.getBoundingClientRect();
       const move = (mv: PointerEvent) => {
-        const rect = this.svg.getBoundingClientRect();
-        node.fx = (mv.clientX - rect.left - this.view.x) / this.view.k;
-        node.fy = (mv.clientY - rect.top - this.view.y) / this.view.k;
+        const drag = this.activeDrag;
+        if (!drag || mv.pointerId !== drag.pointerId) return;
+        drag.clientX = mv.clientX;
+        drag.clientY = mv.clientY;
+        this.positionActiveDrag();
+        this.tick();
         this.sim?.alphaTarget(0.25).restart();
       };
-      const up = () => {
+      const finish = () => {
+        if (this.activeDrag?.node !== node) return;
+        this.activeDrag = null;
         node.fx = null; node.fy = null;
         this.sim?.alphaTarget(0);
         group.removeEventListener("pointermove", move);
         group.removeEventListener("pointerup", up);
+        group.removeEventListener("pointercancel", up);
+        group.removeEventListener("lostpointercapture", up);
+        if (group.hasPointerCapture(ev.pointerId)) group.releasePointerCapture(ev.pointerId);
       };
+      const up = (event: PointerEvent) => {
+        if (event.pointerId === ev.pointerId) finish();
+      };
+      this.activeDrag = {
+        node, pointerId: ev.pointerId, clientX: ev.clientX, clientY: ev.clientY,
+        offsetX: rect.left + this.view.x + (node.x ?? 0) * this.view.k - ev.clientX,
+        offsetY: rect.top + this.view.y + (node.y ?? 0) * this.view.k - ev.clientY,
+        finish,
+      };
+      // Pin immediately so simulation ticks cannot move a held node before its
+      // first pointermove. Cancellation or data replacement always unpins it.
+      this.positionActiveDrag();
       group.addEventListener("pointermove", move);
       group.addEventListener("pointerup", up);
+      group.addEventListener("pointercancel", up);
+      group.addEventListener("lostpointercapture", up);
+      group.setPointerCapture(ev.pointerId);
     });
   }
 
   private bindPanZoom(): void {
-    let panStart: { x: number; y: number } | null = null;
     this.svg.addEventListener("pointerdown", (ev) => {
-      panStart = { x: ev.clientX - this.view.x, y: ev.clientY - this.view.y };
+      if (this.activeDrag || this.panStart) return;
+      // Stop pending automatic fit at gesture start, before its first move.
+      this.autoResizeView = false;
+      this.fitAfterResize = false;
+      this.panPointerId = ev.pointerId;
+      this.panStart = { x: ev.clientX - this.view.x, y: ev.clientY - this.view.y };
     });
     this.svg.addEventListener("pointermove", (ev) => {
-      if (!panStart) return;
-      this.view.x = ev.clientX - panStart.x;
-      this.view.y = ev.clientY - panStart.y;
+      if (!this.panStart || ev.pointerId !== this.panPointerId) return;
+      this.autoResizeView = false;
+      this.fitAfterResize = false;
+      this.view.x = ev.clientX - this.panStart.x;
+      this.view.y = ev.clientY - this.panStart.y;
       this.applyView();
     });
-    window.addEventListener("pointerup", () => { panStart = null; });
+    const finishPan = (ev: PointerEvent) => {
+      if (ev.pointerId !== this.panPointerId) return;
+      this.panStart = null;
+      this.panPointerId = null;
+    };
+    window.addEventListener("pointerup", finishPan);
+    window.addEventListener("pointercancel", finishPan);
+    this.svg.addEventListener("lostpointercapture", finishPan);
     this.svg.addEventListener("wheel", (ev) => {
       ev.preventDefault();
+      this.autoResizeView = false;
+      this.fitAfterResize = false;
       const rect = this.svg.getBoundingClientRect();
       const px = ev.clientX - rect.left, py = ev.clientY - rect.top;
       const k = Math.max(0.35, Math.min(3, this.view.k * Math.exp(-ev.deltaY * 0.0016)));
