@@ -593,6 +593,12 @@ Two clones of PocketBase at the same commit: one wired with `graft init`, one un
 
 ---
 
+## Source and operation boundaries
+
+The graph viewer has Context, Code and Outline views. Its source is in [viewer/](viewer/); [CLI dispatch](src/cli.ts) selects graph and visualization operations. Viewer themes and semantic graph colors are defined in [viewer/style.css](viewer/style.css). The [source overview](docs/source-overview.mdx) describes the architecture and operating boundaries.
+
+The [GitHub App guide](docs/github-app.md) describes a separate webhook/review service. See [telemetry policy](TELEMETRY.md) before sharing context. A source map or exported graph does not establish live service health.
+
 ## Development
 
 ```bash
