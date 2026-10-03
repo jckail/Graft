@@ -10,10 +10,10 @@
 <header class="appbar">
   <div class="brand"><b>graft</b><span id="repoName"></span></div>
   <div class="counts" id="counts"></div>
-  <nav class="tabs" role="tablist" id="tabs">
-    <button class="tab" role="tab" aria-selected="true" data-tab="context">Context</button>
-    <button class="tab" role="tab" aria-selected="false" data-tab="code">Code</button>
-    <button class="tab" role="tab" aria-selected="false" data-tab="outline">Outline</button>
+  <nav class="tabs" role="tablist" id="tabs" aria-label="Graph views">
+    <button class="tab" type="button" role="tab" id="tabContext" aria-controls="viewerPanel" aria-selected="true" tabindex="0" data-tab="context">Context</button>
+    <button class="tab" type="button" role="tab" id="tabCode" aria-controls="viewerPanel" aria-selected="false" tabindex="-1" data-tab="code">Code</button>
+    <button class="tab" type="button" role="tab" id="tabOutline" aria-controls="viewerPanel" aria-selected="false" tabindex="-1" data-tab="outline">Outline</button>
   </nav>
   <div class="searchbox">
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
@@ -24,7 +24,12 @@
   </button>
 </header>
 
-<main class="stage" id="stage">
+<div class="load-status" id="loadStatus" hidden>
+  <span id="loadMessage" role="status" aria-live="polite"></span>
+  <button id="retryLoad" type="button" hidden>Retry</button>
+</div>
+<main class="workspace">
+<div class="stage" id="viewerPanel" role="tabpanel" aria-labelledby="tabContext" tabindex="0">
   <div class="canvas-wrap" id="canvasWrap">
     <svg class="graph" id="graphSvg" role="img" aria-label="Force-directed graph"></svg>
     <div class="edgestyle" id="edgeChips"><span class="cap">Edges</span></div>
@@ -42,6 +47,7 @@
   </div>
   <div class="resizer" id="detailResizer" role="separator" aria-orientation="vertical" aria-label="Resize details panel" tabindex="0" title="Drag to resize"></div>
   <aside class="detail" id="detail"><div class="empty">Select a node to view details</div></aside>
+</div>
 </main>
 
 <script type="module" src="/app.js"></script>

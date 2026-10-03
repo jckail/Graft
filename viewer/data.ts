@@ -133,6 +133,7 @@ const inlined = (globalThis as { __GRAFT_DATA__?: InlinedData }).__GRAFT_DATA__;
 export async function loadContextGraph(): Promise<VizGraph> {
   if (inlined?.contextGraph) return inlined.contextGraph;
   const res = await fetch("/api/context-graph");
+  if (!res.ok) throw new Error(`Context graph request failed (${res.status})`);
   return (await res.json()) as VizGraph;
 }
 
@@ -153,7 +154,8 @@ export async function loadCodeGraph(): Promise<VizGraph | null> {
     raw = inlined.codeGraph as CodeGraphV1;
   } else {
     const res = await fetch("/api/code-graph");
-    if (!res.ok) return null;
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`Code graph request failed (${res.status})`);
     raw = (await res.json()) as CodeGraphV1;
   }
   const nodes: VizNode[] = raw.nodes.map((n) => ({

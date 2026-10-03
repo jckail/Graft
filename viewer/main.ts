@@ -6,8 +6,8 @@ import { loadContextGraph, loadCodeGraph, onServerChange, chipKey, CHIP_HINT, co
 import { GraphView } from "./graph.js";
 import { renderDetail } from "./detail.js";
 import { renderOutline } from "./tree.js";
-
-type Tab = "context" | "code" | "outline";
+import { createTabs, type Tab } from "./tabs.js";
+import { createLoader, loadPair, type LoadReason } from "./load.js";
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 
@@ -16,6 +16,8 @@ const state = {
   context: null as VizGraph | null,
   code: null as VizGraph | null,
   outlineOpen: {} as Record<string, boolean>,
+  hasLoaded: false,
+  loadPhase: "loading" as "loading" | "ready" | "error",
 };
 
 const view = new GraphView($("graphSvg") as unknown as SVGSVGElement);
@@ -144,11 +146,19 @@ function showDetail(id: string | null): void {
 view.onSelect = (id) => showDetail(id);
 
 /* ---------- tabs ---------- */
+const tabButtons = [...document.querySelectorAll<HTMLButtonElement>(".tab")];
+const tabs = createTabs(tabButtons.map((button) => ({
+  tab: button.dataset.tab as Tab,
+  id: button.id,
+  setHidden: (hidden: boolean) => { button.hidden = hidden; },
+  setSelected: (selected: boolean) => button.setAttribute("aria-selected", String(selected)),
+  setTabIndex: (index: number) => { button.tabIndex = index; },
+  focus: () => button.focus(),
+})), (id) => $("viewerPanel").setAttribute("aria-labelledby", id));
+
 function setTab(tab: Tab): void {
   state.tab = tab;
-  document.querySelectorAll<HTMLButtonElement>(".tab").forEach((b) => {
-    b.setAttribute("aria-selected", b.dataset.tab === tab ? "true" : "false");
-  });
+  tabs.select(tab);
   const isOutline = tab === "outline";
   $("canvasWrap").hidden = isOutline;
   $("outlineView").hidden = !isOutline;
@@ -158,7 +168,11 @@ function setTab(tab: Tab): void {
   showDetail(null);
 
   const empty = $("graphEmpty");
-  if (tab === "outline") {
+  if (!state.hasLoaded) {
+    $("outlineView").hidden = true;
+    $("canvasWrap").hidden = false;
+    showEmpty(state.loadPhase === "error" ? "Could not load graphs. Use Retry above." : "Loading graphs…");
+  } else if (tab === "outline") {
     if (state.code) renderOutline($("tree"), state.code, null, state.outlineOpen, showDetail);
     else {
       $("outlineView").hidden = true;
@@ -200,8 +214,14 @@ function showEmpty(html: string): void {
   empty.hidden = false;
 }
 
-document.querySelectorAll<HTMLButtonElement>(".tab").forEach((b) => {
+tabButtons.forEach((b) => {
   b.addEventListener("click", () => setTab(b.dataset.tab as Tab));
+  b.addEventListener("keydown", (event) => {
+    if (tabs.key(b.dataset.tab as Tab, event.key)) event.preventDefault();
+  });
+});
+$("tabs").addEventListener("focusout", (event) => {
+  if (!$("tabs").contains((event as FocusEvent).relatedTarget as Node | null)) tabs.resetTabStop();
 });
 
 /* ---------- search ---------- */
@@ -288,10 +308,21 @@ resizer.addEventListener("keydown", (ev) => {
 });
 
 /* ---------- data loading + live reload ---------- */
-async function loadAll(): Promise<void> {
-  const [context, code] = await Promise.all([loadContextGraph(), loadCodeGraph()]);
+type GraphPair = { context: VizGraph; code: VizGraph | null };
+const retry = $("retryLoad") as HTMLButtonElement;
+let beforeApply: { context: VizGraph | null; code: VizGraph | null; tab: Tab; selected: string | null;
+  hasLoaded: boolean; repoName: string; title: string } | undefined;
+
+function applyGraphs({ context, code }: GraphPair): void {
+  beforeApply = { context: state.context, code: state.code, tab: state.tab, selected: view.selected,
+    hasLoaded: state.hasLoaded, repoName: $("repoName").textContent ?? "", title: document.title };
+  const focused = tabButtons.find((button) => button === document.activeElement)?.dataset.tab as Tab | undefined;
+  const firstLoad = !state.hasLoaded;
+  const selected = view.selected;
   state.context = context;
   state.code = code;
+  state.hasLoaded = true;
+  state.loadPhase = "ready";
   // The subtitle only exists on an exported page (`graft viz --export --title`),
   // where the same file is published per pull request and the reader needs to know
   // WHICH one they opened.
@@ -300,23 +331,74 @@ async function loadAll(): Promise<void> {
   document.title = `graft viz — ${where}`;
   // A blast export ships one tab: its Code tab would be the repo's whole wiring
   // graph, which answers nothing about the pull request the page is about.
-  const tabs = context.meta.tabs;
-  if (tabs) {
-    document.querySelectorAll<HTMLButtonElement>(".tab").forEach((b) => {
-      b.hidden = !tabs.includes(b.dataset.tab as Tab);
-    });
-  }
   // An exported page says which tab holds its content: a structural build has no
   // concept nodes, so the default Context tab would open on an empty canvas.
-  const wanted = context.meta.defaultTab;
-  setTab(wanted && wanted !== state.tab ? wanted : state.tab);
+  setTab(tabs.configure(context.meta.tabs, context.meta.defaultTab, firstLoad, focused));
+  if (selected && activeGraph()?.nodes.some((node) => node.id === selected)) {
+    view.selected = selected;
+    view.restyle();
+    showDetail(selected);
+    if (state.tab === "outline") renderOutline($("tree"), state.code!, selected, state.outlineOpen, showDetail);
+  }
+  beforeApply = undefined;
+  $("loadStatus").hidden = true;
 }
 
-onServerChange(() => {
-  const selected = view.selected;
-  void loadAll().then(() => {
-    if (selected) { view.selected = selected; view.restyle(); showDetail(selected); }
-  });
+function showLoadFailure(): void {
+  // A render failure can follow state assignment; restore the last known state.
+  const previous = beforeApply;
+  let restored = true;
+  beforeApply = undefined;
+  if (previous) {
+    state.context = previous.context;
+    state.code = previous.code;
+    state.hasLoaded = previous.hasLoaded;
+    state.tab = previous.tab;
+    $("repoName").textContent = previous.repoName;
+    document.title = previous.title;
+    try {
+      tabs.configure(previous.context?.meta.tabs);
+      setTab(previous.tab);
+      view.selected = previous.selected;
+      view.restyle();
+      showDetail(previous.selected);
+    } catch { restored = false; }
+  }
+  state.loadPhase = "error";
+  $("loadMessage").textContent = !restored ? "Could not display graphs. Retry." : state.hasLoaded
+    ? "Could not refresh graphs. Showing the last loaded graphs."
+    : "Could not load graphs. Retry.";
+  $("loadStatus").hidden = false;
+  retry.hidden = false;
+  if (!state.hasLoaded) setTab(state.tab);
+}
+
+const loader = createLoader<GraphPair>({
+  async load() {
+    return loadPair(loadContextGraph, loadCodeGraph);
+  },
+  apply: applyGraphs,
+  loading(retained) {
+    state.loadPhase = "loading";
+    retry.disabled = true;
+    $("viewerPanel").setAttribute("aria-busy", "true");
+    if (!retained) {
+      $("loadMessage").textContent = "Loading graphs…";
+      $("loadStatus").hidden = false;
+      setTab(state.tab);
+    }
+  },
+  failed: showLoadFailure,
+  settled() {
+    retry.disabled = false;
+    $("viewerPanel").setAttribute("aria-busy", "false");
+  },
 });
 
-void loadAll();
+function requestLoad(reason: LoadReason): void {
+  // Also observe unexpected UI callback failures; no discarded rejected promise.
+  void loader.request(reason).catch(() => { showLoadFailure(); });
+}
+retry.addEventListener("click", () => requestLoad("retry"));
+onServerChange(() => requestLoad("change"));
+requestLoad("initial");
