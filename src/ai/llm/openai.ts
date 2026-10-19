@@ -1,7 +1,7 @@
 /**
  * OpenAI-compatible transport. Wraps the `openai` SDK pointed at any
  * OpenAI-compatible endpoint (OpenAI, OpenRouter, Fireworks, a LiteLLM proxy,
- * Groq, Together, DeepSeek, a local server, …) — the user picks the endpoint
+ * Groq, Quarg, DeepSeek, a local server, …) — the user picks the endpoint
  * with `baseUrl` and authenticates with their own key.
  *
  * This adapter reproduces graft's historical wire behavior exactly: temperature
