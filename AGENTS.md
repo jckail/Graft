@@ -7,24 +7,41 @@ Graft (`@nanonets/graft`) is an open-source CLI, MCP server and Claude Code inte
 
 These apply unless this repo's own rules, below or in linked docs, say otherwise. Repo-specific rules always win. If a rule here would break a repo gate (hooks, CI, branch protection, a documented release process), follow the gate and say so in your summary.
 
-### Git hygiene
-- **Isolate work in a git worktree** when the checkout is dirty, on another branch, or shared with other agents: `git worktree add ../.worktrees/<repo>-<topic> -b <branch> origin/<default-branch>`. Never switch branches or reset a checkout holding someone else's uncommitted work. Remove the worktree when merged.
-- **One focused branch per change**, cut from a fresh `origin/<default-branch>`. Never commit directly to the default branch unless this repo explicitly says to.
-- **Commit early and often, push as you go.** Small, reviewable, self-consistent commits; push after each meaningful step so work is never only on this machine. Do not let a branch drift for days.
+### Worktrees and branches
+- **Every change gets its own worktree inside this repo, under `.worktrees/`** (gitignored, so all of a repo's worktrees sit at one level and none are committed): `git fetch --prune origin && git worktree add .worktrees/<topic> -b <branch> origin/<default-branch>`. Do not create worktrees anywhere else (no `../`, `~/projects/.worktrees`, or extra clones). Never switch branches or reset a checkout holding someone else's uncommitted work.
+- **One focused branch per change, and every pushed branch names its Linear issue.** Cut it from a fresh `origin/<default-branch>` and use the issue's `gitBranchName` (e.g. `jckail13/jck-123-short-topic`) or `jck-123-short-topic`. A branch without a `jck-<n>` key is rejected by the pre-push hook and by the `branch-name` CI job; bot branches (`dependabot/*`, `renovate/*`, `release-please--*`) are the only exception. No issue yet? Find or create one first (see Linear below). Never commit directly to the default branch unless this repo explicitly says to.
+- **Commit early and often, push as you go**, so no work exists only on this machine. Open a draft PR once there is a pushed commit. Don't let a branch drift for days: rebase or merge from `origin/<default-branch>` and rerun the gate before review.
 - **Stage precisely** (`git add <paths>`, never `git add -A` or `.` blindly). Read `git status` and `git diff --staged` before every commit. Never commit secrets, `.env*`, credentials, large binaries or generated build output.
 - **Never** force-push shared branches, rewrite published history, skip hooks (`--no-verify`) or bypass branch protection. If a hook or check fails, fix the cause or stop and report it.
-- Keep the working tree clean at the end of a task: nothing important left uncommitted, stashed or only local.
+- **Cleanup is automatic after merge.** GitHub deletes the head branch when a PR merges (`delete_branch_on_merge`). Locally, `git-prune-merged` (from agent-skills, run on a schedule and safe to run by hand) removes clean worktrees and local branches whose work is on `origin/<default-branch>`, whether by ancestry or by a merged PR with the same head. It never touches dirty, locked, unpushed or open-PR work. When you finish, leave your worktree clean and pushed so the sweep can remove it, or remove it yourself: `git worktree remove .worktrees/<topic> && git branch -d <branch>`.
 
 ### Commit messages
-Match the style already in `git log` for this repo (use conventional commits `type(scope): subject` if it does). Otherwise: imperative subject, 72 characters or fewer, no trailing period; blank line; a body explaining **why** and any trade-offs, not a restatement of the diff. Reference the Linear issue (`JCK-123`) when one exists. Add the attribution trailer your harness requires, if any.
+Every pushed commit must be understandable on its own. Match the style already in `git log` (conventional commits `type(scope): subject` if the repo uses them). Otherwise use an imperative subject of 72 characters or fewer with no trailing period, then a blank line, then a body. The body says **why** the change is needed, what it changes at a high level, trade-offs, and how it was verified. It doesn't restate the diff. Reference the Linear issue (`JCK-123`). "wip", "fix", "updates" and empty bodies are not acceptable on pushed commits; reword before pushing, never after. Add the attribution trailer your harness requires, if any.
 
 ### Pull requests and merging
-Open a PR for every change: what changed, why, how it was verified, risks, and the Linear link. Keep PRs small. Merge only with required checks green and using the merge method this repo prefers (some require linear history or forbid squash: check the repo's settings and history first). Delete the branch after merge. Do not merge a PR you could not verify.
+Open a PR for every change and fill in `.github/pull_request_template.md`:
+- **Summary**: what changed, in a few sentences.
+- **Why**: the problem or request, with the Linear link.
+- **Changes**: the notable parts, file by file only when that helps.
+- **Verification**: the exact commands run and their result, plus the Depot CI run link.
+- **Risk and rollback**: what could break and how to undo it.
+
+Keep PRs small and the title in commit-subject style with the issue key. Merge only when the required checks are green (`depot-ci / ci-result`), using the merge method this repo prefers (some require linear history or forbid squash: check the repo's settings and history first). Do not merge a PR you could not verify.
+
+### CI: Depot CI only
+- **CI runs on Depot CI**, defined in `.depot/workflows/` (GitHub Actions syntax). Do not add routine CI to `.github/workflows/`. The only exceptions are jobs Depot can't run (macOS/iOS or Windows runners, `release:`/`issues:` events, `environment:`-gated cloud deploys), each kept dispatch- or tag-only with a comment saying why.
+- **Workflow conventions:** `name: depot-ci`. Jobs run on `depot-ubuntu-24.04[-arm][-<cpus>]` (2 CPUs by default; size up only for measured wins) with `timeout-minutes`. Use `permissions: contents: read` and `persist-credentials: false`. Pin third-party actions to commit SHAs. Concurrency cancels superseded PR runs. A final `ci-result` job (`if: always()`, `needs:` every job) fails unless all succeeded; branch protection requires only `depot-ci / ci-result`.
+- **Run it before you push:** `depot ci run --workflow .depot/workflows/ci.yml` (add `--job <id>` for one job) uploads your uncommitted diff as a patch. That run is feedback, not proof for the commit; the proof is the PR run. Debug with `depot ci status`, `depot ci logs`, `depot ci diagnose --run <id>`, and `depot ci ssh` into a live job.
+- **Secrets and variables** live in Depot: `depot ci secrets add NAME --repo jckail/<repo>`, or `depot ci vars add`. Never echo them, and never put them in workflow files.
+- **Use Depot for everything it does, locally and in CI.** That means `depot build` / `depot bake` for container images (never plain `docker build`; the project id is in `depot.json`), and the Depot Registry (`f3bqc4vdfr.registry.depot.dev`, or `depot build --save`) for images that don't need a cloud registry. Use Depot Cache for compilers: `depot cargo` for Rust, `GOCACHEPROG="depot gocache"` for Go. Use `depot ci run` instead of waiting on a push.
 
 ### Linear (workspace `jckail`, issue keys `JCK-nnn`)
-- Track non-trivial work in Linear. Find the existing issue before creating one; do not duplicate.
-- Put the issue key in the branch name (`jck-123-short-topic`), PR title or description, and relevant commits.
-- Post status at start, on meaningful progress, on blockers and at handoff. If you have no Linear access this session, put the same information in the PR and say so.
+- **All dev work starts from a Linear issue**, because the branch name needs its key. Find and read the canonical issue, comments and relations before creating one, and do not duplicate. Create a narrowly scoped issue only when none fits. Preserve owner, project and status. Move the issue to In Progress when the branch is pushed, attach the PR, and leave Done for verified, merged work.
+- Split large outcomes into independently testable child issues with current source, scope, finite acceptance criteria, genuine `blockedBy` prerequisites (do not turn related context into blockers) and handback.
+- Put the issue key in the branch name (`jck-123-short-topic` or the issue's `gitBranchName`), PR title or description, and relevant commits.
+- Reconcile GitHub issues by exact `owner/repo/number`, body and comments. Link each issue to its canonical Linear outcome (plus backlink where writable); closed GitHub state alone does not prove Linear acceptance.
+- Sign every authored Linear or GitHub comment `— <harness>-<agent_session>-<device_id>` using actual runtime identity (e.g., `codex_cli-123456-jordan-ubuntu` or `antigravity-<conversationId>-<device_id>`). Never borrow another agent's identity or alter human comments.
+- Post status at start, on meaningful progress, on blockers and at handoff (avoid unchanged repeat posts within 25 minutes). If you have no Linear access this session, put the same information in the PR and say so. Quarg owns execution, leases and approvals; Linear is planning only.
 
 ### Quality bar
 - Read before you write: follow the surrounding code's conventions, naming and comment density. Prefer editing existing code and docs over adding new ones.
@@ -85,11 +102,11 @@ Data flow: source files -> `ingest` -> tree-sitter extract (cached by content ha
 ### Invariants and design decisions
 - The structural graph is deterministic and needs no key or network; never add a model call to `build`, `check`, `ask`, `grep`, `callers`, `skeleton`, `map` or `blast` (except the explicit `blast --name`).
 - `graft/` is a local regenerable cache, git-ignored (`build` adds the line itself); what gets committed is wiring (`.claude/`, instruction files, MCP config). Do not commit `graft/`.
-- Repo-relative paths are stored POSIX-style and parsed with `/` by hand. A platform-separator leak fails silently (matches nothing), so the Windows CI leg is load-bearing. Use the helpers in `src/util/paths.ts`.
+- Repo-relative paths are stored POSIX-style and parsed with `/` by hand. A platform-separator leak fails silently (matches nothing), so a Windows-only bug is invisible to Depot CI (Linux only); run `npm test` on Windows before releases that touch path handling. Use the helpers in `src/util/paths.ts`.
 - Managed regions in user-owned files are fenced with `<!-- graft:start -->`/`<!-- graft:end -->` (and `<!-- graft:brain:start/end -->` for Trail rules) in `src/hosts/sections.ts`. `init` rewrites only inside those fences and must preserve malformed/foreign content; `uninstall` removes only what graft wrote. Do not hand-edit inside those fences in a repo graft has initialized; do not reuse those markers.
 - `init` merges into `.claude/settings.json` and never clobbers a non-Graft `statusLine`; with no TTY it writes nothing unless `--agents`/`--yes` is given.
 - MCP tool names are an API: old (pre-0.8.1) names are still accepted via aliases.
-- Native tree-sitter grammars are built by node-gyp at install. Keep `node-gyp` pinned in devDependencies (12.x; 13.x needs Node >=22.22), and keep `package.json` `allowScripts`/`overrides` consistent when adding a grammar. See the long comment in `.github/workflows/ci.yml`.
+- Native tree-sitter grammars are built by node-gyp at install. Keep `node-gyp` pinned in devDependencies (12.x; 13.x needs Node >=22.22), and keep `package.json` `allowScripts`/`overrides` consistent when adding a grammar. See the long comment in `.depot/workflows/ci.yml`.
 - The App processes untrusted source: it never executes PR code (tree-sitter parses text), runs as non-root in Docker, and reviews run in child processes so `/healthz` stays responsive.
 - Telemetry sends only fields listed in `TELEMETRY.md`/`telemetry/contract.ts`; never add events or properties without updating both.
 
@@ -101,7 +118,7 @@ No database, no embeddings/vector index, no daemon. The graph is plain files. La
 
 ## Commands
 
-Prerequisites: Node >=20 (`engines`; CI tests Node 20 on Linux and Windows plus Node 24 for WASM grammars; the Docker image uses Node 22), npm, and a C/C++ toolchain plus Python for node-gyp native grammar builds. Optional env var NAMES (see `.env.example`): `GRAFT_PROVIDER`, `GRAFT_API_KEY`, `GRAFT_MODEL`, `GRAFT_BASE_URL`, `GRAFT_DIR`, `GRAFT_NO_REFRESH`, `GRAFT_REFRESH`, `GRAFT_NO_STATUSLINE`, `GRAFT_NO_GITIGNORE`, `GRAFT_NO_IGNORE`; App: `GRAFT_APP_ID`, `GRAFT_APP_PRIVATE_KEY`, `GRAFT_WEBHOOK_SECRET`, `GRAFT_PUBLIC_URL`, `GRAFT_PAGE_DIR`.
+Prerequisites: Node >=20 (`engines`; CI tests Node 20 on Linux plus Node 24 for WASM grammars; the Docker image uses Node 22), npm, and a C/C++ toolchain plus Python for node-gyp native grammar builds. Optional env var NAMES (see `.env.example`): `GRAFT_PROVIDER`, `GRAFT_API_KEY`, `GRAFT_MODEL`, `GRAFT_BASE_URL`, `GRAFT_DIR`, `GRAFT_NO_REFRESH`, `GRAFT_REFRESH`, `GRAFT_NO_STATUSLINE`, `GRAFT_NO_GITIGNORE`, `GRAFT_NO_IGNORE`; App: `GRAFT_APP_ID`, `GRAFT_APP_PRIVATE_KEY`, `GRAFT_WEBHOOK_SECRET`, `GRAFT_PUBLIC_URL`, `GRAFT_PAGE_DIR`.
 
 | Command | What it does | Status |
 | --- | --- | --- |
@@ -118,7 +135,7 @@ There is no lint or formatter script. `npm run cli -- build --deep` needs a prov
 ## Repo-specific rules
 
 No AGENTS.md or CLAUDE.md existed before this file. Rules below come from repo docs, comments and CI.
-- Do not drop `node-gyp` from devDependencies and do not bump it past 12.x before moving the Node pin (CI comment in `ci.yml`).
+- Do not drop `node-gyp` from devDependencies and do not bump it past 12.x before moving the Node pin. Why: `windows-latest` moved to a Visual Studio 18 image that npm 10's bundled node-gyp 10 cannot map; node-gyp 12.1.0 added the mapping and 12.x is the newest line supporting Node 20 (13.x needs >=22.22). Native grammars resolve the local node-gyp devDependency via `node-gyp-build`, so the pin chooses the toolchain.
 - Do not add a dependency to `src/mcp/tool-names.ts` (hooks import it and must stay cheap). Keep hook code engine-free.
 - Keep `TELEMETRY.md` and `src/telemetry/contract.ts` in lockstep; unlisted events/properties must be dropped.
 - Tests must not depend on shell glob expansion or the developer's git config (`run-tests.mjs` injects `GIT_CONFIG_*` so test commits never sign). Keep tests Windows-safe (no hard-coded `/` separators in comparisons of OS paths).
@@ -133,16 +150,42 @@ Overrides to the shared standards: none found. (Note that the repo's own commit 
 
 - Remotes: `origin` = `jckail/Graft`, `upstream` = `trailhq/Trail-Code`. Default branch `main`, not protected (no branch-protection API config), so no required checks are enforced by GitHub. Squash, merge-commit and rebase merges are all allowed.
 - History style: mostly conventional commits (`fix(viewer): ...`, `feat(trail): ...`, `chore(deps): ...`); owner merges are merge commits and recent ones carry `[skip ci]`; PR merges from the fork use squash with `(#N)`. Prefer squash for docs/small PRs.
-- CI (`.github/workflows/ci.yml`, on push/PR to `main`): `npm ci` and `npm test` on ubuntu and windows (Node 20, `fail-fast: false`), and a Node 24 job running `test/generic-node24.test.ts`. Also CodeQL, OpenSSF Scorecard, `blast.yml` (computes blast radius of the PR), `blast-pages.yml` (publishes the viewer to GitHub Pages and posts the PR comment), `blast-cache.yml` (primes the graph/area-name cache on `main` pushes or manual dispatch). Windows leg compiles native grammars and is slow.
+- CI: Depot CI (`.depot/workflows/ci.yml`); see `## CI and local checks` below.
 - Release: published to npm as `@nanonets/graft` (`prepublishOnly` runs the build; `prepare` stamps the telemetry key). The publish workflow is not in this repo (unverified where it runs). `CHANGELOG.md` stops at 0.19.0 while `package.json` is 0.21.1, so it is stale. The App deploys with `deploy/apprunner.sh` (build, push to ECR, create/update App Runner service) or any container host.
 - Linear: the repo does not mention Linear; use the shared standards.
+
+## CI and local checks
+
+CI is Depot CI only (JCK-2026, JCK-2032): `.depot/workflows/ci.yml`, workflow `depot-ci`. Branch protection should require only `depot-ci / ci-result`.
+
+| Job | What it runs |
+| --- | --- |
+| `branch-name` | PR only: head branch must contain `jck-<n>` (dependabot/renovate/release-please exempt) |
+| `gitleaks` | pinned gitleaks binary over the new commits |
+| `test` | Node 20: `npm ci` (runs `prepare`: tsc, viewer tsc, esbuild bundle) then `npm test` |
+| `node24-wasm` | Node 24: `npm ci`, `node --import tsx --test test/generic-node24.test.ts` |
+| `ci-result` | fails unless every job above succeeded |
+
+Local equivalents: `npm ci && npm test`; `node --import tsx --test test/generic-node24.test.ts` (on Node 24); `depot ci run --workflow .depot/workflows/ci.yml` runs the gate remotely on your working tree.
+
+This is a fork of `trailhq/Trail-Code`. Upstream's other workflows were deleted on purpose (owner decision, 2026-10-22: one focused gate). Do not re-add them when syncing upstream:
+
+| Deleted workflow | What it did | Why it is gone |
+| --- | --- | --- |
+| `ci.yml` Windows matrix leg | `npm ci` and `npm test` on windows-latest | Depot CI cannot run Windows. Coverage lost: Windows path-separator regressions; test on Windows by hand when touching path code |
+| `ci.yml` (rest) | Linux test and Node 24 job | Ported to `.depot/workflows/ci.yml` |
+| `codeql.yml` | CodeQL analysis | Not run in this fork; gitleaks plus `npm test` is the gate |
+| `scorecard.yml` | OpenSSF Scorecard | Upstream supply-chain reporting; not needed here |
+| `blast.yml`, `blast-pages.yml`, `blast-cache.yml` | Graft's own PR blast-radius comment, GitHub Pages viewer, cache priming (`pull_request_target`, Pages, write tokens) | Product dogfooding we do not run; the composite action `.github/actions/graft-blast` and the GitHub App code stay in the tree |
+
+No GitHub Actions remnants are kept. Secrets: none required (`GRAFT_*` secrets belonged to the deleted blast workflows). Images: `deploy/apprunner.sh` and `docs/github-app.md` use `depot build` (project in `depot.json`).
 
 ## Docs and systems
 
 - `README.md`: product overview, full CLI reference, supported languages, MCP tools, `init` flags and the files it writes (read before changing CLI behavior; some parts are stale, see below).
 - `docs/github-app.md`: GitHub App setup, env vars, deployment (read before touching `src/app/` or `deploy/`).
 - `TELEMETRY.md`: authoritative telemetry contract. `SECURITY.md`: vulnerability reporting. `CREDITS.md`: contributors per language. `CHANGELOG.md`: stale after 0.19.0.
-- `.env.example`: config variable names and provider examples. `.github/workflows/ci.yml`: the toolchain rationale (node-gyp, Windows).
+- `.env.example`: config variable names and provider examples. `.depot/workflows/ci.yml`: the CI gate (node-gyp toolchain rationale lives in AGENTS.md).
 - `.claude/skills/graft/SKILL.md` and `.claude/helpers/`: the skill/hooks this repo ships to itself; generated by `graft init`.
 - `src/hosts/sections.ts` and `src/hosts/registry.ts`: how instruction files and fences are written. `src/graph/` and `test/graph-*.test.ts`: extractor behavior per language.
 

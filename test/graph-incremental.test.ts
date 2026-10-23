@@ -395,7 +395,12 @@ test("two grafts on one repo keep separate memos instead of evicting each other"
 
   // Bounded, though: `.cache/` must not grow a file per version forever.
   for (const n of ["1111", "2222", "3333"]) {
-    writeFileSync(join(cache, `extract.${n}00000000000000.json`), "{}");
+    const stale = join(cache, `extract.${n}00000000000000.json`);
+    writeFileSync(stale, "{}");
+    // Prune orders by mtime, so make these unambiguously older than the memo in use.
+    // Without this the ordering rests on filesystem timestamp granularity: files written
+    // within one tick tie, and on Depot CI's filesystem the memo in use lost the tie.
+    utimesSync(stale, new Date(Date.now() - 3_600_000), new Date(Date.now() - 3_600_000));
   }
   await buildGraph(d);
   const left = readdirSync(cache).filter((f) => f.startsWith("extract."));

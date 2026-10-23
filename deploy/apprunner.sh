@@ -38,8 +38,8 @@ aws ecr get-login-password --region "$REGION" | docker login --username AWS --pa
 echo "→ build $IMAGE"
 # --platform is not optional from a Mac: App Runner is x86_64 only, and an arm64
 # image fails at runtime with an exec-format error rather than at push time.
-docker build --platform linux/amd64 -t "$IMAGE" .
-docker push "$IMAGE"
+# depot build (project id in depot.json) builds and pushes in one step; run `depot login` first.
+depot build --platform linux/amd64 -t "$IMAGE" --push .
 
 ARN="$(aws apprunner list-services --region "$REGION" \
   --query "ServiceSummaryList[?ServiceName=='${SERVICE}'].ServiceArn | [0]" --output text)"
