@@ -147,3 +147,14 @@ Overrides to the shared standards: none found. (Note that the repo's own commit 
 - `src/hosts/sections.ts` and `src/hosts/registry.ts`: how instruction files and fences are written. `src/graph/` and `test/graph-*.test.ts`: extractor behavior per language.
 
 Known stale spots found while verifying (do not trust blindly): README "Development" clones `NanoNets/context-graph-engine`; `.env.example` says the default graph dir is `<repo>/.context` and mentions a `bench/` harness that is not in this repo (the CLI default is `graft/`); `src/engine.ts` header comments still say `.context/`; `package.json` `repository` points to `trailhq/Graft`.
+
+## Git and worktree hygiene
+
+- Work on a short-lived branch cut from fresh origin/main; one concern per branch; reference the Linear issue (JCK-nnn) in branch, commits and PR.
+- Use a git worktree under ~/projects/.worktrees/Graft-<topic> (never clone extra copies of this repo into ~/projects); remove it after the PR merges (`git worktree remove`, then `git branch -d`, `git worktree prune`).
+- Commit early, push often; no work should exist only on this machine. Open a draft PR as soon as there is a pushed commit.
+- Stage explicit paths; never `git add -A` blindly; never commit secrets, .env* files, keys, build output.
+- Never force-push shared branches, skip hooks (--no-verify) or bypass branch protection.
+- Before deleting any branch or worktree: confirm it is merged (ancestor of origin/main or a MERGED PR with the same head) or fully pushed; `git status` must be clean; if unsure keep it and record it in the cleanup ledger (quarg repo docs/hygiene/macbook-ledger).
+- Before ending a session: no uncommitted or unpushed work left behind; clean the worktrees you created.
+- Machine-local files (.supermemory.json, .claude/settings.local.json) stay untracked.
