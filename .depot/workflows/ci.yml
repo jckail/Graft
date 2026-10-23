@@ -1,0 +1,106 @@
+# Depot CI is this repo's CI of record (JCK-2026). It replaces .github/workflows/ci.yml,
+# codeql.yml, scorecard.yml and the blast*.yml workflows (see AGENTS.md, "CI and local checks").
+# Require only `depot-ci / ci-result`; it fails unless every job below succeeded.
+name: depot-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: depot-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Every pushed branch must carry its Linear key (bots exempt). PR-only; pushes to main skip it.
+  branch-name:
+    if: github.event_name == 'pull_request'
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Branch names its Linear issue (jck-<n>)
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          echo "branch: $HEAD_REF"
+          case "$HEAD_REF" in dependabot/*|renovate/*|release-please--*) exit 0 ;; esac
+          echo "$HEAD_REF" | grep -Eiq '(^|[^a-z0-9])jck-[0-9]+' || { echo "::error::Branch '$HEAD_REF' has no Linear key; use the issue's gitBranchName (jck-<n>-topic)"; exit 1; }
+
+  # Pinned gitleaks binary (gitleaks-action demands an org license on Depot CI).
+  gitleaks:
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: gitleaks (new commits; full history when there is no base)
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb   # linux_x64; arm64 is e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          curl -fsSLo /tmp/gitleaks.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tgz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          if [ -n "$BASE" ] && git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+            /tmp/gitleaks git --redact --no-banner --log-opts="${BASE}..HEAD" .
+          else
+            /tmp/gitleaks git --redact --no-banner .
+          fi
+
+  # Linux leg of upstream's matrix. The Windows leg cannot run on Depot CI (JCK-2026).
+  test:
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: npm
+      # The tree-sitter grammars are native addons built by node-gyp at install; `prepare`
+      # also runs the full build (tsc, viewer tsc, esbuild bundle). Keep node-gyp pinned to 12.x.
+      - name: Install dependencies and build
+        run: npm ci
+      - name: Test
+        run: npm test
+
+  node24-wasm:
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Exercise every breadth grammar
+        run: node --import tsx --test test/generic-node24.test.ts
+
+  # Required verdict. Branch protection requires only `depot-ci / ci-result`.
+  ci-result:
+    name: ci-result
+    if: always()
+    needs: [branch-name, gitleaks, test, node24-wasm]
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require every job to succeed (skipped branch-name on push is fine)
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "job results: $RESULTS"
+          for r in $RESULTS; do case "$r" in success|skipped) ;; *) exit 1 ;; esac; done

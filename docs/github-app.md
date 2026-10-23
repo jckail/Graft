@@ -51,7 +51,7 @@ Then **Generate a private key** — the download is the only copy — and note t
 ### 2. Run it
 
 ```bash
-docker build -t graft-app .
+depot build -t graft-app --load .
 docker run -p 3000:3000 \
   -e GRAFT_APP_ID=123456 \
   -e GRAFT_APP_PRIVATE_KEY="$(cat graft.private-key.pem)" \

@@ -28,3 +28,4 @@ transcripts/
 
 # graft's local repository settings — not committed.
 /.graft/
+.worktrees/
