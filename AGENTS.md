@@ -185,7 +185,7 @@ This is a fork of `trailhq/Trail-Code`. Upstream's other workflows were deleted 
 | `scorecard.yml` | OpenSSF Scorecard | Upstream supply-chain reporting; not needed here |
 | `blast.yml`, `blast-pages.yml`, `blast-cache.yml` | Graft's own PR blast-radius comment, GitHub Pages viewer, cache priming (`pull_request_target`, Pages, write tokens) | Product dogfooding we do not run; the composite action `.github/actions/graft-blast` and the GitHub App code stay in the tree |
 
-No GitHub Actions remnants are kept. Secrets: none required (`GRAFT_*` secrets belonged to the deleted blast workflows). Images: `deploy/apprunner.sh` and `docs/github-app.md` use `depot build` (project in `depot.json`).
+No GitHub Actions remnants are kept. Secrets: none required (`GRAFT_*` secrets belonged to the deleted blast workflows). Images: `deploy/apprunner.sh` and `docs/github-app.md` use local Docker BuildKit with the explicit default context and builder.
 
 ## Docs and systems
 
